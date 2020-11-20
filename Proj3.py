@@ -2,56 +2,51 @@ import os
 import imageio
 import torch
 import torchvision
+import cv2
 import numpy as np
 import pickle
 from UNet import UNet
+import torchvision.transforms as transforms
 from UNetLoss import reconstruction_loss, perceptual_loss, warping_loss, smoothness_loss
 
-dataset_path = "/Users/nkroeger/Documents/UF_Grad/2020\ Fall/DL4CG/Part3/SuperSloMo/original_high_fps_videos/"
-filenames = os.listdir(dataset_path)
+# dataset_path = "/Users/nkroeger/Documents/UF_Grad/2020\ Fall/DL4CG/Part3/SuperSloMo/original_high_fps_videos/"
 
-#Load in dataset
-# videos = dict()
-# numVideos = torch.zeros(len(filenames))
-# count = 0
-# for i in range(0,2):
-# 	frames = []
-# 	video = imageio.get_reader(dataset_path+filenames[i])
-# 	for i, frame in enumerate(video):
-# 		frames.append(frame)
-# 	videos[count] = frames
-# 	count = count+1
-# 	print(count)
-# with open('videos2.pickle', 'wb') as handle:
-#     pickle.dump(videos, handle, protocol=pickle.HIGHEST_PROTOCOL)
+def resize_tensor(input_tensors, h, w):
+  final_output = None
+  batch_size, channel, height, width = input_tensors.shape
+  input_tensors = torch.squeeze(input_tensors, 1)
 
-# with open("videos5.pickle","rb") as handle:
-#     videos = pickle.load(handle)
+  for img in input_tensors:
+    img_PIL = transforms.ToPILImage()(img)
+    img_PIL = torchvision.transforms.Resize([h,w])(img_PIL)
+    img_PIL = torchvision.transforms.ToTensor()(img_PIL)
+    if final_output is None:
+      final_output = img_PIL
+    else:
+      final_output = torch.cat((final_output, img_PIL), 0)
+  final_output = torch.unsqueeze(final_output, 1)
+  return final_output
 
-# print(len(videos[2]))
+#Read in 2 images for initial results
+img0 = torch.from_numpy(np.asarray(cv2.imread('00205.jpg'))).float()
+img1 = torch.from_numpy(np.asarray(cv2.imread('00234.jpg'))).float()
+#Normalize
+img0 = img0.permute(2, 0, 1)*2.5/255 + 0.01
+img1 = img1.permute(2, 0, 1)*2.5/255 + 0.01
+#Resize
+img0 = resize_tensor(torch.unsqueeze(img0, dim = 0), 512, 512)
+img1 = resize_tensor(torch.unsqueeze(img1, dim = 0), 512, 512)
 
 
-##############################
-# Define Training Algorithm
-##############################
-def train_Reg(ConvModel, optimizer, loss, L_channel, a_b_average):
+def backwarp(image, flow):
+    #Use a flow to warp one image to another.
+    #Implement the I = g(I, F) function
+    flow = flow.squeeze()
+    flowX = flow[0,:,:]
+    flowY = flow[1,:,:]
+    warpedImg = cv2.remap(image, flowX, flowY, cv2.INTER_LINEAR)
+    return warpedImg
 
-	tr_loss = 0
-
-	if torch.cuda.is_available():
-		L_channel = L_channel.cuda()
-		a_b_average = a_b_average.cuda()
-
-	optimizer.zero_grad()
-	pred = ConvModel(L_channel)
-
-	predError = loss(pred, a_b_average)
-	predError.backward()
-	optimizer.step()
-
-	tr_loss = predError.item()
-	print("Loss: " ,tr_loss)
-	train_loss.append(tr_loss)
 
 ###################
 # Define Network
@@ -74,46 +69,47 @@ if torch.cuda.is_available():
 	flowCompNet   = flowCompNet.cuda()
 	arbFlowInterp = arbFlowInterp.cuda()
 
-train_loss = []
-epochs     = 100
 
 ##############################
 # Define Training Algorithm
 ##############################
+train_loss = []
+epochs     = 100
 for i in range(0, epochs):
     print("epoch: ", i+1)
-    # train_Reg(ConvModel, optimizer, loss, L_channel, a_b_average)
 
     #TODO: Get 2 frames and intermediate frames
 
-
     #Define input to 1st network
-    ImageInput = torch.cat([Frame0, Frame1], dim=1)
+    ImageInput = torch.cat([img0, img1], dim=0).permute(1,0,2,3)
+    # ImageInput = torch.unsqueeze(ImageInput, dim = 0)
     #forward pass through 1st network
     Flows      = flowCompNet(ImageInput)
     Flow0to1   = Flows[:,0:2,:,:]
     Flow1to0   = Flows[:,2:,:,:]
 
     #Define input to 2nd network
-
-    #Calculate backwarp twice for t->I1 and t->I0 (3 channels for each)
-
+    #Calculate backwarp g() twice for t->I1 and t->I0 (3 channels for each)
+    img0_np     = img0.detach().numpy()
+    Flow0to1_np = Flow0to1.detach().numpy()
+    warpedImg   = backwarp(img0_np, Flow0to1_np)
+    import pdb; pdb.set_trace()
     #Calculate F_hat from equation (4)
 
     #forward pass through 2nd network
     arbFlowOutputs = arbFlowInterp()
-    V_t1      = arbFlowOutputs[:,0,  :,:]
+    V_t1      = arbFlowOutputs[:,  0,:,:]
     DeltaF_t1 = arbFlowOutputs[:,1:3,:,:]
     DeltaF_t0 = arbFlowOutputs[:,3: ,:,:]
 
     #Calculate predicted I_t using equation (1.5) from the paper
-    I_tHat = ~
+    # I_tHat = ~
 
-    #Calculate the losses
-    reconstruction_loss, perceptual_loss, warping_loss, smoothness_loss
-
+    #Calculate the losses with weights equation (7)
     predError = rLoss + pLoss + wLoss + sLoss
 
     #Update the weights
     predError.backward()
     optimizer.step()
+
+#TODO: Given a 30fps video, predict intermediate frames and save out a 240fps video
