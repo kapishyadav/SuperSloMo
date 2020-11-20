@@ -2,7 +2,7 @@ import torch
 from torch.autograd import Variable
 from torch.nn import Linear, LeakyReLU, MSELoss, ReLU, CrossEntropyLoss, ConvTranspose2d, Sequential, Conv2d, MaxPool2d, Module, Softmax, BatchNorm2d, Dropout, UpsamplingNearest2d, BatchNorm2d
 from torch.optim import Adam, SGD
-from torch.nn.functional import interpolate 
+from torch.nn.functional import interpolate
 from torch import tanh
 import torchvision.models as models
 
@@ -30,6 +30,5 @@ def perceptual_loss(i0, i1, ogSet, predSet, device):
 def warping_loss(i0, i1, ogSet, predSet, device):
 	pass
 
-def smoothness_loss:
+def smoothness_loss():
 	pass
-
