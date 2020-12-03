@@ -10,16 +10,14 @@ import numpy as np
 
 
 
-def reconstruction_loss(i0, i1, ogSet, predSet, device):
-	#Equation (8)
-	N = len(ogSet)
-	rl = (1/N) * (np.sum(np.linalg.norm((predSet - ogSet), ord=1)))
-	return rl
+# def reconstruction_loss(ogSet, predSet):
+# 	#Equation (8)
+# 	N = len(ogSet)
+# 	rl = (1/N) * (np.sum(np.linalg.norm((predSet - ogSet), ord=1)))
+# 	return rl
 
-def perceptual_loss(i0, i1, ogSet, predSet, device):
+def perceptual_loss(I_tHat, I_t):
 	#Equation (9)
-	N = len(ogSet)
-
 	vgg16Model 		   = models.vgg16(pretrained=True)
 	Conv4_3Weights 	   = list(vgg16.children())[0][:22]
 	vgg16Model_Conv4_3 = nn.Sequential(*Conv4_3Weights)
@@ -29,13 +27,13 @@ def perceptual_loss(i0, i1, ogSet, predSet, device):
 	for layer in vgg16Model_Conv4_3.parameters():
 		layer.requires_grad = False
 
-	ogSetPred  = vgg16Model_Conv4_3(ogSet)
-	predSetOut = vgg16Model_Conv4_3(predSet)
+	ogSetPred  = vgg16Model_Conv4_3(I_t)
+	predSetOut = vgg16Model_Conv4_3(I_tHat)
 
-	pl = MSELoss(ogSetPred, predSetOut)
+	pl = np.linalg.norm((predSet - ogSet), ord=2))
 	return pl
 
-def warping_loss(i0, i1, ogSet, predSet, device):
+def warping_loss(i0, i1, ogSet, predSet):
 	pass
 
 def smoothness_loss():
