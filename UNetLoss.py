@@ -5,7 +5,6 @@ from torch.optim import Adam, SGD
 from torch.nn.functional import interpolate
 from torch import tanh
 import torchvision.models as models
-
 import numpy as np
 
 
@@ -30,11 +29,10 @@ def perceptual_loss(I_tHat, I_t):
 	ogSetPred  = vgg16Model_Conv4_3(I_t)
 	predSetOut = vgg16Model_Conv4_3(I_tHat)
 
-	pl = np.linalg.norm((predSet - ogSet), ord=2))
+	pl = torch.linalg.norm(predSet - ogSet, p=2)
 	return pl
 
-def warping_loss(i0, i1, ogSet, predSet):
-	pass
+def warping_loss(i0, i1, g_i1_F01, g_i0_F10):
+	lw = torch.linalg.norm(i0 - g_i1_F01 , p=1) + torch.linalg.norm(i1 - g_i0_F10, p=1)
+	return lw
 
-def smoothness_loss():
-	pass

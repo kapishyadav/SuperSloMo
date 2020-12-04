@@ -7,7 +7,7 @@ import numpy as np
 import pickle
 from UNet import UNet
 import torchvision.transforms as transforms
-from UNetLoss import reconstruction_loss, perceptual_loss, warping_loss, smoothness_loss
+from UNetLoss import perceptual_loss, warping_loss
 import random
 from PIL import Image
 from torchvision.transforms import ToTensor
@@ -75,14 +75,16 @@ img0 = resize_tensor(torch.unsqueeze(img0, dim = 0), 512, 512)
 img1 = resize_tensor(torch.unsqueeze(img1, dim = 0), 512, 512)
 
 
-def backwarp(image, flow):
+def backwarp(image, flow, device):
 	#Use a flow to warp one image to another.
 	#Implement the I = g(I, F) function
+	image = image.cpu().detach().numpy()
+	flow = flow.cpu().detach().numpy()
 	flow = flow.squeeze()
 	flowX = flow[0,:,:]
 	flowY = flow[1,:,:]
 	warpedImg = cv2.remap(image.squeeze().transpose(1,2,0), flowX, flowY, cv2.INTER_LINEAR)
-	return warpedImg
+	return torch.from_numpy(warpedImg).permute(2,0,1).unsqueeze(0).to(device)
 
 
 ###################
@@ -96,6 +98,11 @@ InputChannels_arbFlow  = 20 # 20 = 6 RGB channels + 4 Flows + 6 backwarped image
 OutputChannels_arbFlow = 5 # 5 = 4 Flows (2channels each) + 1 channel Visibility map
 arbFlowInterp = UNet(InputChannels_arbFlow, OutputChannels_arbFlow)
 
+lmbda_r = 0.8
+lmbda_p = 0.005
+lmbda_w = 0.4
+lmbda_s = 1
+
 ###################################
 #Setting up training parameters
 ###################################
@@ -105,6 +112,9 @@ optimizer = torch.optim.Adam(BothModelWeights, lr=0.01)
 if torch.cuda.is_available():
 	flowCompNet   = flowCompNet.cuda()
 	arbFlowInterp = arbFlowInterp.cuda()
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 
 ##############################
 # Define Training Algorithm
@@ -117,6 +127,8 @@ for i in range(0, epochs):
 
 	#TODO: Get 2 frames and intermediate frames
 	#Define input to 1st network
+	img0 = img0.to(device)
+	img1 = img1.to(device)
 	ImageInput = torch.cat([img0, img1], dim=0).permute(1,0,2,3)
 	# ImageInput = torch.unsqueeze(ImageInput, dim = 0)
 	#forward pass through 1st network
@@ -130,21 +142,17 @@ for i in range(0, epochs):
 		t=i/(NumIntermediateFrames+1)
 		# I_true_t =  Images[t] #groundtruth intermediate frame
 		#Calculate backwarp g() twice for t->I1 and t->I0 (3 channels for each)
-		img0_np     = img0.detach().numpy()
-		Flow0to1_np = Flow0to1.detach().numpy()
-		img1_np     = img1.detach().numpy()
-		Flow1to0_np = Flow1to0.detach().numpy()
 
 		#Calculate F_hat from equation (4)
-		F_hat_tto0 = -(1-t)*t*Flow0to1_np + t*t*Flow1to0_np
-		F_hat_tto1 = (1-t)*(1-t)* Flow0to1_np - t*(1-t)*Flow1to0_np
+		F_hat_tto0 = -(1-t)*t*Flow0to1 + t*t*Flow1to0
+		F_hat_tto1 = (1-t)*(1-t)* Flow0to1 - t*(1-t)*Flow1to0
 
-		g0 = torch.from_numpy(backwarp(img0_np, F_hat_tto0)).permute(2,0,1).unsqueeze(0)
-		g1 = torch.from_numpy(backwarp(img1_np, F_hat_tto1)).permute(2,0,1).unsqueeze(0)
+		g0 = backwarp(img0, F_hat_tto0, device)
+		g1 = backwarp(img1, F_hat_tto1, device)
 
 		# Input to network 2 - arb time flow interpolation
 		# 20 = 6 RGB channels + 4 Flows + 6 backwarped images + 4 Flows from prev net
-		arbFlowInput = torch.cat([ImageInput, g1, torch.from_numpy(F_hat_tto1), torch.from_numpy(F_hat_tto0), g0, Flow0to1, Flow1to0], dim=1)
+		arbFlowInput = torch.cat([ImageInput, g1, F_hat_tto1, F_hat_tto0, g0, Flow0to1, Flow1to0], dim=1)
 
 		#forward pass through 2nd network
 		arbFlowOutputs = arbFlowInterp(arbFlowInput)
@@ -155,14 +163,27 @@ for i in range(0, epochs):
 		V_t0	  = 1 - V_t1 #equation (5)
 
 		#Calculate predicted I_t using equation (1.5) from the paper
+		F_tto0 = F_hat_tto0 + DeltaF_t0
+		F_tto1 = F_hat_tto1 + DeltaF_t1
+
 		Z = (1-t)*V_t0 + t*V_t1
-		I_tHat = ((1-t)*V_t0*g0 + t*V_t1*g1)/Z
+		I_tHat = ((1-t)*V_t0*backwarp(img0, F_tto0, device) + t*V_t1*backwarp(img1, F_tto1, device))/Z
+		
+
+		rLoss += torch.linalg.norm(I_tHat - I_true_t, p=1)
+		pLoss += perceptual_loss(I_tHat, I_t)
+		wLoss_2+= torch.linalg.norm(I_true_t- backwarp(img0, F_hat_tto0, device), p=1)
+		wLoss_2+= torch.linalg.norm(I_true_t- backwarp(img1, F_hat_tto1, device), p=1)
 		import pdb; pdb.set_trace()
 
-		rLoss += np.linalg.norm((I_tHat - I_true_t), ord=1)
-		pLoss += perceptual_loss(I_tHat, I_t)
+	wLoss = wLoss_2/NumIntermediateFrames + warping_loss(img0, img1, backwarp(i1,Flow0to1, device), backwarp(i0,Flow1to0, device)) 
+
+	gradF_0to1 = torch.linalg.norm(Flow0to1[:,:,:-1,:] - Flow0to1[:,:,1:,:], p=1) + torch.linalg.norm(Flow0to1[:,:,:,:-1] - Flow0to1[:,:,:,1:], p=1)
+	gradF_1to0 = torch.linalg.norm(Flow1to0[:,:,:-1,:] - Flow1to0[:,:,1:,:], p=1) + torch.linalg.norm(Flow1to0[:,:,:,:-1] - Flow1to0[:,:,:,1:], p=1)
+	sLoss = gradF_0to1 + gradF_1to0
 	#Calculate the losses with weights equation (7)
-	predError = rLoss/NumIntermediateFrames + pLoss/NumIntermediateFrames + wLoss + sLoss
+	
+	predError = lmbda_r*(rLoss/NumIntermediateFrames) + lmbda_p*(pLoss/NumIntermediateFrames) + lmbda_w*wLoss + lmbda_s*sLoss
 
 	#Update the weights
 	predError.backward()
