@@ -14,25 +14,17 @@ import numpy as np
 # 	N = len(ogSet)
 # 	rl = (1/N) * (np.sum(np.linalg.norm((predSet - ogSet), ord=1)))
 # 	return rl
-
-def perceptual_loss(I_tHat, I_t):
+mse = torch.nn.MSELoss()
+L1loss = torch.nn.L1Loss()
+def perceptual_loss(I_tHat, I_true_t, vgg16Model_Conv4_3):
 	#Equation (9)
-	vgg16Model 		   = models.vgg16(pretrained=True)
-	Conv4_3Weights 	   = list(vgg16.children())[0][:22]
-	vgg16Model_Conv4_3 = nn.Sequential(*Conv4_3Weights)
+	I_true_t_features  = vgg16Model_Conv4_3(I_true_t)
+	I_tHat_features = vgg16Model_Conv4_3(I_tHat)
 
-	vgg16Model_Conv4_3.to(device)
-
-	for layer in vgg16Model_Conv4_3.parameters():
-		layer.requires_grad = False
-
-	ogSetPred  = vgg16Model_Conv4_3(I_t)
-	predSetOut = vgg16Model_Conv4_3(I_tHat)
-
-	pl = torch.linalg.norm(predSet - ogSet, p=2)
+	pl = mse(I_tHat_features, I_true_t_features)
 	return pl
 
 def warping_loss(i0, i1, g_i1_F01, g_i0_F10):
-	lw = torch.linalg.norm(i0 - g_i1_F01 , p=1) + torch.linalg.norm(i1 - g_i0_F10, p=1)
+	lw = L1loss(i0 , g_i1_F01) + L1loss(i1, g_i0_F10)
 	return lw
 
