@@ -13,9 +13,10 @@ from PIL import Image
 from torchvision.transforms import ToTensor
 import torchvision.models as models
 
+
 import sys
 
-# torch.cuda.empty_cache()
+torch.cuda.empty_cache()
 
 def sizeof_fmt(num, suffix='B'):
     ''' by Fred Cirera,  https://stackoverflow.com/a/1094933/1870254, modified'''
@@ -24,6 +25,7 @@ def sizeof_fmt(num, suffix='B'):
             return "%3.1f %s%s" % (num, unit, suffix)
         num /= 1024.0
     return "%.1f %s%s" % (num, 'Yi', suffix)
+
 
 
 # dataset_path = "/Users/nkroeger/Documents/UF_Grad/2020\ Fall/DL4CG/Part3/SuperSloMo/original_high_fps_videos/"
@@ -37,36 +39,8 @@ def my_test_train_split(filenames,train_perc):
 	return train_len, train_names, test_names
 
 
-# data_path = "ExtractedImages/"
-# filenames = os.listdir(data_path)
-
-# train_len, train_files, test_files = my_test_train_split(filenames, 80)
 
 
-# def save_train(train_files, test_files, train_len):
-# 	train = []
-# 	print('split done')
-# 	for file in train_files:
-# 		loc = data_path+file+"/"
-# 		i=0
-# 		for image_path in os.listdir(loc):
-# 			i=i+1
-# 			image = Image.open(loc+image_path)
-# 			image = ToTensor()(image)
-# 			train.append(image)
-
-# 		print(file)
-# 	train = np.array(train)
-# 	np.save("train.npy", train)
-# 	print("\n\nTrain data saved\n")
-# save_train(train_files, test_files, train_len)
-train = []
-folder = "ExtractedImages/IMG_0187.MOV/"
-for i in range(0, 8):
-	file = folder+"000"+str(i+1)+"0.jpg"
-	img = Image.open(file)
-	img = ToTensor()(img)
-	train.append(img)
 
 
 
@@ -84,25 +58,7 @@ def resize_tensor(input_tensors, h, w):
 		else:
 			final_output = torch.cat((final_output, img_PIL), 0)
 		final_output = torch.unsqueeze(final_output, 1)
-	return final_output
-
-
-
-
-#Read in 2 images for initial results
-img0 = resize_tensor(torch.unsqueeze(train[0], dim=0), 256, 256)
-img1 = resize_tensor(torch.unsqueeze(train[-1], dim=0), 256, 256)
-
-intermediateFrames = train[1:7]
-
-# img0 = torch.from_numpy(np.asarray(cv2.imread('00205.jpg'))).float()
-# img1 = torch.from_numpy(np.asarray(cv2.imread('00234.jpg'))).float()
-#Normalize
-# img0 = img0.permute(2, 0, 1)*2.5/255 + 0.01
-# img1 = img1.permute(2, 0, 1)*2.5/255 + 0.01
-#Resize
-# img0 = resize_tensor(torch.unsqueeze(img0, dim = 0), 512, 512)
-# img1 = resize_tensor(torch.unsqueeze(img1, dim = 0), 512, 512)
+	return final_output 
 
 
 def backwarp(image, flow, device):
@@ -156,29 +112,8 @@ if torch.cuda.is_available():
 	flowCompNet   = flowCompNet.cuda()
 	arbFlowInterp = arbFlowInterp.cuda()
 
-
-
-
-##############################
-# Define Training Algorithm
-##############################
-train_loss = []
-NumIntermediateFrames = 6
-epochs     = 100
-for e in range(0, epochs):
-
-	print("epoch: ", e+1)
-
-	#TODO: Get 2 frames and intermediate frames
-	#Define input to 1st network
-	img0 = img0.to(device)
-	img1 = img1.to(device)
-	ImageInput = torch.cat([img0, img1], dim=1)
-
-	# ImageInput = torch.unsqueeze(ImageInput, dim = 0)
-	#forward pass through 1st network
-	import pdb;pdb.set_trace()
-
+# Train Net #
+def trainNet(ImageInput, intermediateFrames):
 	Flows      = flowCompNet(ImageInput)
 	Flow0to1   = Flows[:,0:2,:,:]
 	Flow1to0   = Flows[:,2:,:,:]
@@ -187,13 +122,13 @@ for e in range(0, epochs):
 	rLoss, pLoss, wLoss_2 = 0.0, 0.0, 0.0
 	for i in range(0, NumIntermediateFrames):
 		t=(i+1)/(NumIntermediateFrames+1)
-		I_true_t =  resize_tensor(torch.unsqueeze(intermediateFrames[i], dim=0).to(device), 256, 256) #groundtruth intermediate frame
+		I_true_t = torch.squeeze(intermediateFrames[:,i,:,:,:]).to(device) #groundtruth intermediate frame
 		#Calculate backwarp g() twice for t->I1 and t->I0 (3 channels for each)
 
 		#Calculate F_hat from equation (4)
 		F_hat_tto0 = -(1-t)*t*Flow0to1 + t*t*Flow1to0
 		F_hat_tto1 = (1-t)*(1-t)* Flow0to1 - t*(1-t)*Flow1to0
-
+		import pdb;pdb.set_trace()
 		g0 = backwarp(img0, F_hat_tto0, device)
 		g1 = backwarp(img1, F_hat_tto1, device)
 
@@ -215,20 +150,18 @@ for e in range(0, epochs):
 
 		Z = (1-t)*V_t0 + t*V_t1
 		I_tHat = ((1-t)*V_t0*backwarp(img0, F_tto0, device) + t*V_t1*backwarp(img1, F_tto1, device))/Z
-		
-		# import pdb; pdb.set_trace()
 
 		rLoss += L1loss(I_tHat, I_true_t)
 		pLoss += perceptual_loss(I_tHat, I_true_t, vgg16Model_Conv4_3)
 		wLoss_2+= L1loss(I_true_t, backwarp(img0, F_hat_tto0, device))
 		wLoss_2+= L1loss(I_true_t, backwarp(img1, F_hat_tto1, device))
 		local_vars = list(locals().items())
-		for name, size in sorted(((name, sys.getsizeof(value)) for name, value in locals().items()), key= lambda x: -x[1])[:10]:
-			print("{:>30}: {:>8}".format(name, sizeof_fmt(size)))
-		break
+		# for name, size in sorted(((name, sys.getsizeof(value)) for name, value in locals().items()), key= lambda x: -x[1])[:10]:
+		# 	print("{:>30}: {:>8}".format(name, sizeof_fmt(size)))
+		# break
 		
 
-	wLoss = wLoss_2/NumIntermediateFrames + warping_loss(img0, img1, backwarp(i1,Flow0to1, device), backwarp(i0,Flow1to0, device)) 
+	wLoss = wLoss_2/NumIntermediateFrames + warping_loss(img0, img1, backwarp(img1,Flow0to1, device), backwarp(img0,Flow1to0, device)) 
 
 	gradF_0to1 = L1loss(Flow0to1[:,:,:-1,:], Flow0to1[:,:,1:,:]) + L1loss(Flow0to1[:,:,:,:-1], Flow0to1[:,:,:,1:])
 	gradF_1to0 = L1loss(Flow1to0[:,:,:-1,:], Flow1to0[:,:,1:,:]) + L1loss(Flow1to0[:,:,:,:-1], Flow1to0[:,:,:,1:])
@@ -236,13 +169,47 @@ for e in range(0, epochs):
 	#Calculate the losses with weights equation (7)
 	
 	predError = lmbda_r*(rLoss/NumIntermediateFrames) + lmbda_p*(pLoss/NumIntermediateFrames) + lmbda_w*wLoss + lmbda_s*sLoss
-
+	print(predError)
 	#Update the weights
 	predError.backward()
 	optimizer.step()
 
+##############################
+# Define Training Algorithm
+##############################
+train_loss = []
+NumIntermediateFrames = 6
+epochs     = 50
+batch_size = 25
+train_set = torch.load("train_set_bSize"+str(batch_size)+".pt")
+for e in range(0, epochs):
+	print("epoch: ", e+1)
+	batchLoss = 0.0
+	for k in range(0, len(train_set)):
+		currBatch = train_set[k].float() #shape: batchSize, 8, 3, 128, 128
 
-	
+		img0 = torch.squeeze(currBatch[:,0, :, :, :])
+		img1 = torch.squeeze(currBatch[:,-1, :, :, :])
 
+		intermediateFrames = currBatch[:, 1:(NumIntermediateFrames+1), :, :, :]
+		#TODO: Get 2 frames and intermediate frames
+		#Define input to 1st network
+		img0 = img0.to(device)
+		img1 = img1.to(device)
+		ImageInput = torch.cat([img0, img1], dim=1)
+		batchLoss += trainNet(ImageInput, intermediateFrames)
+		print('Batch Loss:', batchLoss)
+	train_loss.append(batchLoss/len(train_set))
+	print('Train Loss:', train_loss)
+
+#TODO: 
+#Split dataset into train/test
+#backwarp function, remove cv2, use pytorch
+#train, save out trained model
+#evaluation metrics for report
+# e.g. training accuracy, reconstruction losses etc.
+#Show the flow, visibility, I0, IIt and It_predicted
+
+#Report, 2 videos
 
 #TODO: Given a 30fps video, predict intermediate frames and save out a 240fps video

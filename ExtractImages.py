@@ -30,10 +30,9 @@ def video_to_frames(input_loc, output_loc):
             cap.release()
             break
         # Write the results back to output location.
-        frame = cv2.resize(frame, (512,512))
+        frame = cv2.resize(frame, (128,128))
         cv2.imwrite(output_loc + "/%#05d.jpg" % (count+1), frame)
         count = count + 1
-
 
 
 
