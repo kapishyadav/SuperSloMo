@@ -257,3 +257,6 @@ save_image(img1.float(), 'img1.png')
 
 # def interpolationError(I_gt, I_inter):
 # 	err = np.asarray(ImageChops.difference(I_gt))
+# "...interpolation error (IE) [1], which
+# is defined as root-mean-squared (RMS) difference between
+# the ground-truth image and the interpolated image."
