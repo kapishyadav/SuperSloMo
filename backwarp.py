@@ -18,12 +18,11 @@ class backwarp(nn.Module):
         self.height = heighht
 
     def forward(self, image, flow):
-        x = flow[:, 0, :, :]
-        y = flow[:, 1, :, :]
+        x, y = flow[:, 0, :, :], flow[:, 1, :, :]        
         x = normalize(self.gridX.unsqueeze(0).expand_as(x).float() + x, "W")
         y = normalize(self.gridY.unsqueeze(0).expand_as(y).float() + y, "H")
-        imgOut = torch.nn.functional.grid_sample(image, torch.stack((x,y), dim=3))
-        return imgOut
+        warpedImg = torch.nn.functional.grid_sample(image, torch.stack((x,y), dim=3))
+        return warpedImg
 
     def normalize(self, flow, dim):
         if dim == "W":
