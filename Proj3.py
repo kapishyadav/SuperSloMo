@@ -178,12 +178,12 @@ def trainNet(ImageInput, intermediateFrames):
 # Define Training Algorithm
 ##############################
 if loadModel:
-    #stateDict = torch.load('tlkasdhflaksjdf.pt')
-    #ArbFlowModel.load_state_dict(stateDict['ArbFlowModel'])
-    # FlowCompNet.load_state_dict(stateDict['FlowCompNet'])
+    stateDict = torch.load('tlkasdhflaksjdf.pt')
+    ArbFlowModel.load_state_dict(stateDict['ArbFlowModel'])
+    FlowCompNet.load_state_dict(stateDict['FlowCompNet'])
     #OLD:
-    ArbFlowModel = torch.load('ArbFlowModel.pt', map_location=device)
-    FlowCompNet = torch.load('FlowCompNet.pt', map_location=device)
+    # ArbFlowModel = torch.load('ArbFlowModel.pt', map_location=device)
+    # FlowCompNet = torch.load('FlowCompNet.pt', map_location=device)
 else:
     ModelPath = now+"/"
     os.makedirs(ModelPath, exist_ok=True)
