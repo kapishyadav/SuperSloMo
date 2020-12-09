@@ -11,17 +11,17 @@ class backwarp(nn.Module):
 
     def __init__(self, width, height, device):
         super(backwarp, self).__init__()
-        grid        = np.meshgrid(np.arange(W), np.arange(H))
+        grid        = np.meshgrid(np.arange(width), np.arange(height))
         self.gridX  = torch.tensor(grid[0], requires_grad=False).to(device)
-        self.gridY  = torch.tensor(grod[1], requires_grad=False).to(device)
+        self.gridY  = torch.tensor(grid[1], requires_grad=False).to(device)
         self.width  = width
-        self.height = heighht
+        self.height = height
 
     def forward(self, image, flow):
         x, y = flow[:, 0, :, :], flow[:, 1, :, :]        
-        x = normalize(self.gridX.unsqueeze(0).expand_as(x).float() + x, "W")
-        y = normalize(self.gridY.unsqueeze(0).expand_as(y).float() + y, "H")
-        warpedImg = torch.nn.functional.grid_sample(image, torch.stack((x,y), dim=3))
+        x = self.normalize(self.gridX.unsqueeze(0).expand_as(x).float() + x, "W")
+        y = self.normalize(self.gridY.unsqueeze(0).expand_as(y).float() + y, "H")
+        warpedImg = torch.nn.functional.grid_sample(image, torch.stack((x,y), dim=3), align_corners=True)
         return warpedImg
 
     def normalize(self, flow, dim):

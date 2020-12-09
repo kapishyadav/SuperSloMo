@@ -10,11 +10,36 @@ import torchvision.transforms as transforms
 from UNetLoss import perceptual_loss, warping_loss
 import random
 from PIL import Image
+import backwarp
 from torchvision.transforms import ToTensor
 import torchvision.models as models
+from pympler import asizeof
 
 
 import sys
+
+import subprocess
+
+def get_gpu_memory_map():
+    """Get the current gpu usage.
+
+    Returns
+    -------
+    usage: dict
+        Keys are device ids as integers.
+        Values are memory usage as integers in MB.
+    """
+    result = subprocess.check_output(
+        [
+            'nvidia-smi', '--query-gpu=memory.used',
+            '--format=csv,nounits,noheader'
+        ], encoding='utf-8')
+    # Convert lines into a dictionary
+    gpu_memory = [int(x) for x in result.strip().split('\n')]
+    gpu_memory_map = dict(zip(range(len(gpu_memory)), gpu_memory))
+    return gpu_memory_map
+
+
 
 torch.cuda.empty_cache()
 
@@ -39,11 +64,6 @@ def my_test_train_split(filenames,train_perc):
 	return train_len, train_names, test_names
 
 
-
-
-
-
-
 def resize_tensor(input_tensors, h, w):
 	final_output = None
 	batch_size, channel, height, width = input_tensors.shape
@@ -61,18 +81,6 @@ def resize_tensor(input_tensors, h, w):
 	return final_output 
 
 
-def backwarp(image, flow, device):
-	#Use a flow to warp one image to another.
-	#Implement the I = g(I, F) function
-	image = image.cpu().detach().numpy()
-	flow = flow.cpu().detach().numpy()
-	flow = flow.squeeze()
-	flowX = flow[0,:,:]
-	flowY = flow[1,:,:]
-	warpedImg = cv2.remap(image.squeeze().transpose(1,2,0), flowX, flowY, cv2.INTER_LINEAR)
-	return torch.from_numpy(warpedImg).permute(2,0,1).unsqueeze(0).to(device)
-
-
 ###################
 # Define Network
 ###################
@@ -80,11 +88,12 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 InputChannels_flowComp  = 6 # 6 input channels, for stacking 2 RGB images as input
 OutputChannels_flowComp = 4 # 4 = 2 for each flow e.g. 0->1 or 1->0, where each flow has horizontal and vertical component
-flowCompNet = UNet(InputChannels_flowComp, OutputChannels_flowComp)
+flowCompNet = UNet(InputChannels_flowComp, OutputChannels_flowComp).to(device)
+flowBackWarp = backwarp.backwarp(128,128, device).to(device)
 
 InputChannels_arbFlow  = 20 # 20 = 6 RGB channels + 4 Flows + 6 backwarped images + 4 Flows from prev net
 OutputChannels_arbFlow = 5 # 5 = 4 Flows (2channels each) + 1 channel Visibility map
-arbFlowInterp = UNet(InputChannels_arbFlow, OutputChannels_arbFlow)
+arbFlowInterp = UNet(InputChannels_arbFlow, OutputChannels_arbFlow).to(device)
 
 lmbda_r = 0.8
 lmbda_p = 0.005
@@ -108,38 +117,33 @@ for layer in vgg16Model_Conv4_3.parameters():
 BothModelWeights = list(flowCompNet.parameters()) + list(arbFlowInterp.parameters())
 optimizer = torch.optim.Adam(BothModelWeights, lr=0.01)
 
-if torch.cuda.is_available():
-	flowCompNet   = flowCompNet.cuda()
-	arbFlowInterp = arbFlowInterp.cuda()
 
 # Train Net #
 def trainNet(ImageInput, intermediateFrames):
 	Flows      = flowCompNet(ImageInput)
 	Flow0to1   = Flows[:,0:2,:,:]
 	Flow1to0   = Flows[:,2:,:,:]
-
+	
 	#Define input to 2nd network
 	rLoss, pLoss, wLoss_2 = 0.0, 0.0, 0.0
 	for i in range(0, NumIntermediateFrames):
 		t=(i+1)/(NumIntermediateFrames+1)
 		I_true_t = torch.squeeze(intermediateFrames[:,i,:,:,:]).to(device) #groundtruth intermediate frame
 		#Calculate backwarp g() twice for t->I1 and t->I0 (3 channels for each)
-
+		optimizer.zero_grad()
 		#Calculate F_hat from equation (4)
 		F_hat_tto0 = -(1-t)*t*Flow0to1 + t*t*Flow1to0
 		F_hat_tto1 = (1-t)*(1-t)* Flow0to1 - t*(1-t)*Flow1to0
-		import pdb;pdb.set_trace()
-		g0 = backwarp(img0, F_hat_tto0, device)
-		g1 = backwarp(img1, F_hat_tto1, device)
-
+		g0 = flowBackWarp(img0, F_hat_tto0)
+		g1 = flowBackWarp(img1, F_hat_tto1)
+		# print("After g0,g1", get_gpu_memory_map())
 		# Input to network 2 - arb time flow interpolation
 		# 20 = 6 RGB channels + 4 Flows + 6 backwarped images + 4 Flows from prev net
 		arbFlowInput = torch.cat([ImageInput, g1, F_hat_tto1, F_hat_tto0, g0, Flow0to1, Flow1to0], dim=1)
-
 		#forward pass through 2nd network
 		arbFlowOutputs = arbFlowInterp(arbFlowInput)
-
-		V_t1    = arbFlowOutputs[:,  0,:,:]
+		# print("After arbFlowOutputs", get_gpu_memory_map())
+		V_t1      = torch.unsqueeze(arbFlowOutputs[:,  0,:,:], dim = 1)
 		DeltaF_t1 = arbFlowOutputs[:,1:3,:,:]
 		DeltaF_t0 = arbFlowOutputs[:,3: ,:,:]
 		V_t0	  = 1 - V_t1 #equation (5)
@@ -149,58 +153,66 @@ def trainNet(ImageInput, intermediateFrames):
 		F_tto1 = F_hat_tto1 + DeltaF_t1
 
 		Z = (1-t)*V_t0 + t*V_t1
-		I_tHat = ((1-t)*V_t0*backwarp(img0, F_tto0, device) + t*V_t1*backwarp(img1, F_tto1, device))/Z
-
+		#import pdb;pdb.set_trace()
+		I_tHat = ((1-t)*V_t0*flowBackWarp(img0, F_tto0) + t*V_t1*flowBackWarp(img1, F_tto1))/Z
+		# print("After I_tHat", get_gpu_memory_map())
 		rLoss += L1loss(I_tHat, I_true_t)
 		pLoss += perceptual_loss(I_tHat, I_true_t, vgg16Model_Conv4_3)
-		wLoss_2+= L1loss(I_true_t, backwarp(img0, F_hat_tto0, device))
-		wLoss_2+= L1loss(I_true_t, backwarp(img1, F_hat_tto1, device))
+		wLoss_2+= L1loss(I_true_t, flowBackWarp(img0, F_hat_tto0))
+		wLoss_2+= L1loss(I_true_t, flowBackWarp(img1, F_hat_tto1))
 		local_vars = list(locals().items())
 		# for name, size in sorted(((name, sys.getsizeof(value)) for name, value in locals().items()), key= lambda x: -x[1])[:10]:
 		# 	print("{:>30}: {:>8}".format(name, sizeof_fmt(size)))
 		# break
-		
 
-	wLoss = wLoss_2/NumIntermediateFrames + warping_loss(img0, img1, backwarp(img1,Flow0to1, device), backwarp(img0,Flow1to0, device)) 
 
+	wLoss = wLoss_2/NumIntermediateFrames + warping_loss(img0, img1, flowBackWarp(img1,Flow0to1), flowBackWarp(img0,Flow1to0)) 
+	# print("After wLoss", get_gpu_memory_map())
 	gradF_0to1 = L1loss(Flow0to1[:,:,:-1,:], Flow0to1[:,:,1:,:]) + L1loss(Flow0to1[:,:,:,:-1], Flow0to1[:,:,:,1:])
 	gradF_1to0 = L1loss(Flow1to0[:,:,:-1,:], Flow1to0[:,:,1:,:]) + L1loss(Flow1to0[:,:,:,:-1], Flow1to0[:,:,:,1:])
 	sLoss = gradF_0to1 + gradF_1to0
 	#Calculate the losses with weights equation (7)
 	
 	predError = lmbda_r*(rLoss/NumIntermediateFrames) + lmbda_p*(pLoss/NumIntermediateFrames) + lmbda_w*wLoss + lmbda_s*sLoss
-	print(predError)
+	# print("pred error: ", predError.item())
 	#Update the weights
 	predError.backward()
 	optimizer.step()
+	# print("After optimizer", get_gpu_memory_map())
+	return predError
+
 
 ##############################
 # Define Training Algorithm
 ##############################
 train_loss = []
 NumIntermediateFrames = 6
-epochs     = 50
-batch_size = 25
+epochs     = 2
+batch_size = 2
 train_set = torch.load("train_set_bSize"+str(batch_size)+".pt")
+test_set = torch.load("test_set_bSize"+str(batch_size)+".pt")
 for e in range(0, epochs):
 	print("epoch: ", e+1)
-	batchLoss = 0.0
-	for k in range(0, len(train_set)):
+	for k in range(0, 5):#len(train_set)):
+		batchLoss = 0.0
 		currBatch = train_set[k].float() #shape: batchSize, 8, 3, 128, 128
 
 		img0 = torch.squeeze(currBatch[:,0, :, :, :])
 		img1 = torch.squeeze(currBatch[:,-1, :, :, :])
 
 		intermediateFrames = currBatch[:, 1:(NumIntermediateFrames+1), :, :, :]
-		#TODO: Get 2 frames and intermediate frames
+		
 		#Define input to 1st network
 		img0 = img0.to(device)
 		img1 = img1.to(device)
 		ImageInput = torch.cat([img0, img1], dim=1)
-		batchLoss += trainNet(ImageInput, intermediateFrames)
-		print('Batch Loss:', batchLoss)
+		batchLoss += trainNet(ImageInput, intermediateFrames).item()
+		# print('Batch Loss:', batchLoss.item())
 	train_loss.append(batchLoss/len(train_set))
-	print('Train Loss:', train_loss)
+	print('Train Loss:', train_loss[-1])
+torch.save(arbFlowInterp, "ArbFlowModel.pt")
+torch.save(flowCompNet, "FlowCompNet.pt")
+
 
 #TODO: 
 #Split dataset into train/test
@@ -213,3 +225,11 @@ for e in range(0, epochs):
 #Report, 2 videos
 
 #TODO: Given a 30fps video, predict intermediate frames and save out a 240fps video
+
+
+################
+###Evaluation###
+################
+
+# def interpolationError(I_gt, I_inter):
+# 	err = np.asarray(ImageChops.difference(I_gt))
